@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Timer" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>Timer</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #111;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overflow: hidden;
+    }
+
+    #particles {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+    }
+
+    main {
+      position: relative;
+      z-index: 1;
+      width: min(92vw, 720px);
+      text-align: center;
+    }
+
+    #setup {
+      display: grid;
+      gap: 1.25rem;
+    }
+
+    #setup h1 {
+      margin: 0 0 0.5rem;
+      font-size: clamp(2.5rem, 10vw, 5rem);
+    }
+
+    .time-input {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+    }
+
+    #secondsInput {
+      width: min(55vw, 260px);
+      border: 0;
+      border-radius: 20px;
+      padding: 0.4em 0.5em;
+      text-align: center;
+      font: inherit;
+      font-size: clamp(3rem, 14vw, 7rem);
+      font-weight: 700;
+      color: #111;
+      background: #fff;
+    }
+
+    .unit {
+      font-size: clamp(1.5rem, 6vw, 3rem);
+      opacity: 0.75;
+    }
+
+    #start {
+      width: 100%;
+      min-height: 110px;
+      border: 0;
+      border-radius: 24px;
+      background: #fff;
+      color: #111;
+      font: inherit;
+      font-size: clamp(2rem, 8vw, 4rem);
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    #timerView {
+      display: none;
+    }
+
+    #timer {
+      font-size: clamp(7rem, 30vw, 16rem);
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 2rem;
+    }
+
+    #reset {
+      width: 100%;
+      min-height: 120px;
+      border: 0;
+      border-radius: 24px;
+      background: #fff;
+      color: #111;
+      font: inherit;
+      font-size: clamp(2rem, 8vw, 4rem);
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: none;
+      transition: transform 80ms ease, filter 80ms ease;
+    }
+
+    #reset.pressed {
+      transform: scale(0.96);
+      filter: brightness(0.75);
+    }
+
+    .done #timer {
+      opacity: 0.45;
+    }
+
+    @keyframes finishFlash {
+      0%, 100% {
+        background: #111;
+      }
+      50% {
+        background: #b00000;
+      }
+    }
+
+    body.done {
+      animation: finishFlash 0.5s steps(1, end) infinite;
+      color: #fff;
+    }
+
+    body.done #timer {
+      opacity: 1;
+      color: #fff;
+      text-shadow: 0 2px 10px #000;
+    }
+
+    body.done #reset {
+      background: #fff;
+      color: #111;
+    }
+
+  </style>
+</head>
+<body>
+  <canvas id="particles" aria-hidden="true"></canvas>
+  <main>
+    <section id="setup">
+      <h1>Timer</h1>
+      <div class="time-input">
+        <input id="secondsInput" type="number" min="1" max="3600" value="30" inputmode="numeric" />
+        <span class="unit">sec</span>
+      </div>
+      <button id="start" type="button">START</button>
+    </section>
+
+    <section id="timerView">
+      <div id="timer" aria-live="polite">30</div>
+      <button id="reset" type="button">RESET</button>
+    </section>
+  </main>
+
+  <script>
+    const setupEl = document.getElementById("setup");
+    const timerView = document.getElementById("timerView");
+    const secondsInput = document.getElementById("secondsInput");
+    const startButton = document.getElementById("start");
+    const timerEl = document.getElementById("timer");
+    const resetButton = document.getElementById("reset");
+
+    let durationMs = 30_000;
+    let endTime = 0;
+    let wakeLock = null;
+    let audioContext = null;
+    let timerFinished = false;
+    let lastBeepSecond = null;
+    let started = false;
+
+    function ensureAudio() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      if (audioContext.state === "suspended") {
+        audioContext.resume();
+      }
+    }
+
+    function playBeep(frequency = 1000, duration = 0.08, volume = 0.22) {
+      if (!audioContext) return;
+
+      const now = audioContext.currentTime;
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = frequency;
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(volume, now + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      osc.connect(gain);
+      gain.connect(audioContext.destination);
+
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    }
+
+    function playAlarm() {
+      if (!audioContext) return;
+
+      const now = audioContext.currentTime;
+
+      for (let i = 0; i < 3; i++) {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+
+        osc.type = "sine";
+        osc.frequency.value = 880;
+
+        const start = now + i * 0.32;
+        const stop = start + 0.18;
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.35, start + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, stop);
+
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+
+        osc.start(start);
+        osc.stop(stop + 0.02);
+      }
+
+      if (navigator.vibrate) {
+        navigator.vibrate([200, 100, 200, 100, 200]);
+      }
+    }
+
+    async function requestFullscreen() {
+      if (document.fullscreenElement) return;
+
+      try {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (_) {}
+    }
+
+    async function requestWakeLock() {
+      if (!("wakeLock" in navigator)) {
+        return;
+      }
+
+      try {
+        if (!wakeLock) {
+          wakeLock = await navigator.wakeLock.request("screen");
+
+          wakeLock.addEventListener("release", () => {
+            wakeLock = null;
+          });
+        }
+
+      } catch (_) {}
+    }
+
+    async function startTimer() {
+      const seconds = Math.max(1, Math.min(3600, Number(secondsInput.value) || 30));
+      durationMs = seconds * 1000;
+
+      ensureAudio();
+      await requestFullscreen();
+      await requestWakeLock();
+
+      setupEl.style.display = "none";
+      timerView.style.display = "block";
+      started = true;
+
+      endTime = performance.now() + durationMs;
+      timerFinished = false;
+      lastBeepSecond = null;
+      document.body.classList.remove("done");
+
+      if (navigator.vibrate) {
+        navigator.vibrate(45);
+      }
+
+      updateTimer();
+    }
+
+    async function resetTimer() {
+      if (!started) return;
+
+      ensureAudio();
+
+      resetButton.classList.add("pressed");
+      setTimeout(() => resetButton.classList.remove("pressed"), 120);
+      burstFromReset(1);
+
+      if (navigator.vibrate) {
+        navigator.vibrate(45);
+      }
+
+      playBeep(650, 0.06, 0.18);
+
+      await requestFullscreen();
+      await requestWakeLock();
+
+      endTime = performance.now() + durationMs;
+      timerFinished = false;
+      lastBeepSecond = null;
+      document.body.classList.remove("done");
+
+      updateTimer();
+    }
+
+    function updateTimer() {
+      if (!started) return;
+
+      const remainingMs = Math.max(0, endTime - performance.now());
+      const seconds = Math.ceil(remainingMs / 1000);
+
+      timerEl.textContent = seconds;
+
+      if (seconds <= 5 && seconds >= 1 && seconds !== lastBeepSecond) {
+        lastBeepSecond = seconds;
+        playBeep();
+      }
+
+      if (remainingMs > 0) {
+        requestAnimationFrame(updateTimer);
+      } else if (!timerFinished) {
+        timerFinished = true;
+        timerEl.textContent = "0";
+        document.body.classList.add("done");
+        burstFromReset(2.2);
+        playAlarm();
+      }
+    }
+
+    startButton.addEventListener("click", startTimer);
+
+    let resetPointerActive = false;
+
+    resetButton.addEventListener("pointerdown", event => {
+      if (resetPointerActive) return;
+      resetPointerActive = true;
+
+      // Trigger immediately on contact so a swipe still counts as a reset.
+      resetTimer();
+
+      try {
+        resetButton.setPointerCapture(event.pointerId);
+      } catch (_) {}
+    });
+
+    const releaseResetPointer = () => {
+      resetPointerActive = false;
+    };
+
+    resetButton.addEventListener("pointerup", releaseResetPointer);
+    resetButton.addEventListener("pointercancel", releaseResetPointer);
+    resetButton.addEventListener("lostpointercapture", releaseResetPointer);
+
+    // Keyboard accessibility.
+    resetButton.addEventListener("keydown", event => {
+      if ((event.key === "Enter" || event.key === " ") && !event.repeat) {
+        event.preventDefault();
+        resetTimer();
+      }
+    });
+
+    secondsInput.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        startTimer();
+      }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && started) {
+        requestWakeLock();
+      }
+    });
+
+    // White particle bursts from the RESET button
+    const particleCanvas = document.getElementById("particles");
+    const particleCtx = particleCanvas.getContext("2d");
+
+    let particleWidth = 0;
+    let particleHeight = 0;
+    let dpr = 1;
+    let particles = [];
+
+    function resizeParticles() {
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      particleWidth = window.innerWidth;
+      particleHeight = window.innerHeight;
+
+      particleCanvas.width = Math.floor(particleWidth * dpr);
+      particleCanvas.height = Math.floor(particleHeight * dpr);
+      particleCanvas.style.width = particleWidth + "px";
+      particleCanvas.style.height = particleHeight + "px";
+
+      particleCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function burstFromReset(strength = 1) {
+      const rect = resetButton.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+
+      const count = Math.round(40 * strength);
+
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = (2.5 + Math.random() * 5.5) * strength;
+
+        particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          size: 1.5 + Math.random() * 3.5 * strength,
+          life: 1,
+          decay: 0.018 + Math.random() * 0.018,
+          gravity: 0.035 + Math.random() * 0.035
+        });
+      }
+    }
+
+    function animateParticles() {
+      particleCtx.clearRect(0, 0, particleWidth, particleHeight);
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx *= 0.985;
+        p.vy = p.vy * 0.985 + p.gravity;
+        p.life -= p.decay;
+
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+
+        particleCtx.beginPath();
+        particleCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        particleCtx.fillStyle = `rgba(255,255,255,${Math.max(0, p.life)})`;
+        particleCtx.fill();
+      }
+
+      requestAnimationFrame(animateParticles);
+    }
+
+    window.addEventListener("resize", resizeParticles);
+    resizeParticles();
+    animateParticles();
+
+    // PWA offline support
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
+
+  </script>
+</body>
+</html>
